@@ -18,6 +18,7 @@
 #include "ob_ai_func_utils.h"
 #include "ob_ai_func_client.h"
 #include "query/engine/expr/ob_ai_model_resolver.h"
+#include <cmath>
 #include <limits>
 
 namespace oceanbase 
@@ -225,26 +226,52 @@ int ObOpenAIUtils::ObOpenAIEmbed::parse_output(common::ObIAllocator &allocator,
   if (OB_ISNULL(http_response)) {
     ret = OB_INVALID_ARGUMENT;
   } else {
-    ObJsonArray *result_array = nullptr;
-    ObJsonNode *data_node = nullptr;
-    if (OB_FAIL(ObAIFuncJsonUtils::get_json_array(allocator, result_array))) {
-    } else if (OB_ISNULL(data_node = http_response->get_value("data"))) {
+    ObJsonNode *data_node = http_response->get_value("data");
+    if (OB_ISNULL(data_node) || data_node->json_type() != ObJsonNodeType::J_ARRAY) {
       ret = OB_INVALID_DATA;
     } else {
       ObJsonArray *data_array = static_cast<ObJsonArray *>(data_node);
-      ObJsonNode *embedding_node = nullptr;
-      for (int64_t i = 0; OB_SUCC(ret) && i < data_array->element_count(); i++) {
-        if (OB_ISNULL(embedding_node = data_array->get_value(i))) {
-          ret = OB_INVALID_DATA;
-        } else if (embedding_node->json_type() != ObJsonNodeType::J_OBJECT) {
+      const int64_t count = data_array->element_count();
+      ObArray<ObJsonNode *> reordered;
+      for (int64_t i = 0; OB_SUCC(ret) && i < count; ++i) {
+        if (OB_FAIL(reordered.push_back(nullptr))) {
+        }
+      }
+      bool indexed = false;
+      for (int64_t i = 0; OB_SUCC(ret) && i < count; ++i) {
+        ObJsonNode *embedding_node = data_array->get_value(i);
+        if (OB_ISNULL(embedding_node) || embedding_node->json_type() != ObJsonNodeType::J_OBJECT) {
           ret = OB_INVALID_DATA;
         } else {
           ObJsonObject *embedding_obj = static_cast<ObJsonObject *>(embedding_node);
           ObJsonNode *embedding = embedding_obj->get_value("embedding");
-          if (OB_ISNULL(embedding)) {
-            ret = OB_INVALID_DATA;
-          } else if (OB_FAIL(result_array->append(embedding))) {
+          ObJsonNode *index_node = embedding_obj->get_value("index");
+          if (i == 0) {
+            indexed = index_node != nullptr;
           }
+          int64_t index = i;
+          if ((index_node != nullptr) != indexed) {
+            ret = OB_INVALID_DATA;
+          } else if (index_node != nullptr && index_node->json_type() != ObJsonNodeType::J_INT) {
+            ret = OB_INVALID_DATA;
+          } else if (index_node != nullptr) {
+            index = static_cast<ObJsonInt *>(index_node)->get_int();
+          }
+          if (OB_SUCC(ret) && (index < 0 || index >= count || OB_ISNULL(embedding)
+              || embedding->json_type() != ObJsonNodeType::J_ARRAY || reordered.at(index) != nullptr)) {
+            ret = OB_INVALID_DATA;
+          } else if (OB_SUCC(ret)) {
+            reordered.at(index) = embedding;
+          }
+        }
+      }
+      ObJsonArray *result_array = nullptr;
+      if (OB_SUCC(ret) && OB_FAIL(ObAIFuncJsonUtils::get_json_array(allocator, result_array))) {
+      }
+      for (int64_t i = 0; OB_SUCC(ret) && i < count; ++i) {
+        if (OB_ISNULL(reordered.at(i))) {
+          ret = OB_INVALID_DATA;
+        } else if (OB_FAIL(result_array->append(reordered.at(i)))) {
         }
       }
       if (OB_SUCC(ret)) {
@@ -1307,7 +1334,7 @@ int ObAIFuncModel::call_completion(ObString &prompt, ObJsonObject *config, ObStr
   } else {
     result = result_str;
   }
-  if (ret == OB_INVALID_DATA) {
+  if (ret == OB_INVALID_DATA && OB_NOT_NULL(response)) {
     ObString response_str;
     if (OB_SUCCESS == ObAIFuncJsonUtils::print_json_to_str(*allocator_, response, response_str)) {
       char http_message_str[1024];
@@ -1399,7 +1426,8 @@ int ObAIFuncModel::call_dense_embedding_vector(ObArray<ObString> &contents, ObJs
   ObAIFuncClient client;
   ObString request_model_name = get_request_model_name();
   ObString unencrypted_access_key;
-  if (!is_dense_embedding_type()) {
+  if (OB_FAIL(ret)) {
+  } else if (!is_dense_embedding_type()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, info type is not dense embedding");
   } else if (OB_FAIL(ObAIFuncUtils::get_embed_provider(*allocator_, endpoint_info_.get_provider(), embed_provider))) {
@@ -1433,6 +1461,52 @@ int ObAIFuncModel::call_dense_embedding_vector(ObArray<ObString> &contents, ObJs
 }
 
 
+// All supported embedding providers return one array per input item.
+// Validate untrusted JSON before converting it into SQL-visible text.
+namespace {
+int validate_ai_embedding_vector(const ObIJsonBase *base, const int64_t expected_dimension)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(base) || base->json_type() != ObJsonNodeType::J_ARRAY) {
+    ret = OB_INVALID_DATA;
+  } else {
+    const ObJsonArray *array = static_cast<const ObJsonArray *>(base);
+    const int64_t count = array->element_count();
+    if (count < 1 || (expected_dimension > 0 && count != expected_dimension)) {
+      ret = OB_INVALID_DATA;
+    } else {
+      for (int64_t i = 0; OB_SUCC(ret) && i < count; ++i) {
+        const ObJsonNode *node = array->get_value(i);
+        if (OB_ISNULL(node)) {
+          ret = OB_INVALID_DATA;
+        } else {
+          switch (node->json_type()) {
+            case ObJsonNodeType::J_INT:
+            case ObJsonNodeType::J_UINT:
+            case ObJsonNodeType::J_DECIMAL:
+              break;
+            case ObJsonNodeType::J_DOUBLE:
+              if (!std::isfinite(static_cast<const ObJsonDouble *>(node)->value())) {
+                ret = OB_INVALID_DATA;
+              }
+              break;
+            case ObJsonNodeType::J_OFLOAT:
+              if (!std::isfinite(static_cast<const ObJsonOFloat *>(node)->value())) {
+                ret = OB_INVALID_DATA;
+              }
+              break;
+            default:
+              ret = OB_INVALID_DATA;
+              break;
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+} // namespace
+
 int ObAIFuncModel::call_dense_embedding_vector_v2(ObArray<ObString> &content, ObJsonObject *config, ObArray<ObString> &results)
 {
   int ret = OB_SUCCESS;
@@ -1452,6 +1526,9 @@ int ObAIFuncModel::call_dense_embedding_vector_v2(ObArray<ObString> &content, Ob
       ret = OB_ERR_UNEXPECTED;
     } else {
       dimension = static_cast<ObJsonInt *>(dimension_node)->get_int();
+      if (dimension <= 0) {
+        ret = OB_INVALID_ARGUMENT;
+      }
     }
   }
   
@@ -1466,6 +1543,8 @@ int ObAIFuncModel::call_dense_embedding_vector_v2(ObArray<ObString> &content, Ob
   } else if (OB_FAIL(embed_provider->get_body(*allocator_, request_model_name, content, config, body))) {
   } else if (OB_FAIL(client.send_post(*allocator_, endpoint_info_.get_url(), headers, body, response))) {
   } else if (OB_FAIL(embed_provider->parse_output(*allocator_, response, result_base))) {
+  } else if (OB_ISNULL(result_base) || result_base->json_type() != ObJsonNodeType::J_ARRAY) {
+    ret = OB_INVALID_DATA;
   } else {
     ObJsonArray *result_array = static_cast<ObJsonArray *>(result_base);
     int64_t count = result_array->element_count();
@@ -1476,17 +1555,15 @@ int ObAIFuncModel::call_dense_embedding_vector_v2(ObArray<ObString> &content, Ob
         ObIJsonBase *j_base = result_array->get_value(i);
         if (OB_ISNULL(j_base)) {
           ret = OB_ERR_UNEXPECTED;
-        } else if (dimension > 0 && static_cast<ObJsonArray *>(j_base)->element_count() != dimension) {
-          ret = OB_INVALID_ARGUMENT;
-          LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, result dimension is not equal to dimension");
+        } else if (OB_FAIL(validate_ai_embedding_vector(j_base, dimension))) {
+          LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, invalid result vector or dimension");
         } else if (OB_FAIL(ObAIFuncJsonUtils::print_json_to_str(*allocator_, j_base, result_str))) {
-        } else {
-          results.push_back(result_str);
-        } 
+        } else if (OB_FAIL(results.push_back(result_str))) {
+        }
       }
     }
   }
-  if (ret == OB_INVALID_DATA) {
+  if (ret == OB_INVALID_DATA && OB_NOT_NULL(response)) {
     ObString response_str;
     if (OB_SUCCESS == ObAIFuncJsonUtils::print_json_to_str(*allocator_, response, response_str)) {
       char http_message_str[1024];
