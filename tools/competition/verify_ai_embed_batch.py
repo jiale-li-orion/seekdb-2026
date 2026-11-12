@@ -56,21 +56,24 @@ struct ObIAiEndpointResolver{int resolve_by_model_name(const ObString&,ObIAlloca
 }namespace share{
 template<typename T>T*server_service(){static T resolver;return &resolver;}
 }}
-struct ObExpr {int64_t arg_cnt_=2;ObExpr *args_[3]={};mutable ObDatum datum[12];mutable ObBitVector evaluated{{std::vector<bool>(12,false)}};
+struct ObExpr {bool batch_result=true;int64_t arg_cnt_=2;ObExpr *args_[3]={};mutable ObDatum datum[12];mutable ObBitVector evaluated{{std::vector<bool>(12,false)}};
  ObDatumMeta datum_meta_; ObObjMeta obj_meta_;
  int eval_batch(ObEvalCtx&,const ObBitVector&,int64_t){return 0;}
  ObDatum*locate_batch_datums(ObEvalCtx&)const{return datum;}
+ ObDatum&locate_expr_datum(ObEvalCtx&,int64_t row)const{return datum[batch_result?row:0];}
  ObBitVector&get_evaluated_flags(ObEvalCtx&)const{return evaluated;}
 };
 struct ObTextStringHelper{static int read_real_string_data(ObExecContext&,ObIAllocator&,ObDatum&d,ObDatumMeta&,bool,ObString&result){result=d.get_string();return 0;}};
 struct ObAIFuncJsonUtils{static int get_json_object(ObIAllocator&,ObJsonObject*&o){o=new ObJsonObject();return 0;}
 static int get_json_int(ObIAllocator&,int64_t x,ObJsonInt*&o){o=new ObJsonInt(x);return 0;}};
-int provider_calls=0;std::vector<int64_t> sizes;std::vector<std::string> model_labels;
+int forced_provider_error=0;bool return_short_batch=false;int provider_calls=0;std::vector<int64_t> sizes;std::vector<std::string> model_labels;
 struct ObAIFuncUtils{static int get_ai_func_info(ObIAllocator&,const ObString&name,ObAIFuncExprInfo*&o){o=new ObAIFuncExprInfo();o->model=name;return 0;}
 static int set_string_result(const ObExpr&,ObEvalCtx&,ObDatum&out,ObString&text){out.set_string(text);return 0;}};
 struct ObAIFuncModel{ObString id;explicit ObAIFuncModel(ObIAllocator&,ObAIFuncExprInfo&info,oceanbase::share::ObAiModelEndpointInfo&):id(info.model){}
 int call_dense_embedding_vector_v2(ObArray<ObString>&contents,ObJsonObject*config,ObArray<ObString>&results){
- ++provider_calls;sizes.push_back(contents.count());model_labels.push_back(id.value);for(int64_t i=0;i<contents.count();++i){
+ ++provider_calls;sizes.push_back(contents.count());model_labels.push_back(id.value);
+ if(forced_provider_error)return forced_provider_error;
+ for(int64_t i=0;i<contents.count()-(return_short_batch?1:0);++i){
   if(results.push_back(ObString(contents.at(i).value+":"+std::to_string(config?config->dimension:0)))!=0)return 1;
  }return 0;}};
 struct ObExprAIEmbed{static constexpr int MODEL_IDX=0,CONTENT_IDX=1,DIM_IDX=2;
@@ -117,7 +120,39 @@ int main(){
  assert_that(ObExprAIEmbed::eval_ai_embed_batch(expr,ctx,skip,8)==OB_INVALID_ARGUMENT,"NULL model accepted");
  model.datum[0].null=false;dimension.datum[0].number=-1;expr.evaluated.items.assign(12,false);
  assert_that(ObExprAIEmbed::eval_ai_embed_batch(expr,ctx,skip,8)==OB_INVALID_ARGUMENT,"negative dimension accepted");
- std::cout<<"PASS: grouped runtime batch checks (NULL, skip, dimensions, scatter)\n";
+ // Constants occupy one datum slot; unused slots deliberately contain NULL.
+ model.batch_result=false;dimension.batch_result=false;
+ model.datum[0].null=false;model.datum[0].text=ObString("constant-model");
+ dimension.datum[0].null=false;dimension.datum[0].number=4;
+ for(int i=1;i<12;++i){model.datum[i].null=true;dimension.datum[i].null=true;}
+ provider_calls=0;sizes.clear();model_labels.clear();expr.evaluated.items.assign(12,false);
+ ret=ObExprAIEmbed::eval_ai_embed_batch(expr,ctx,skip,8);
+ assert_that(ret==0,"constant parameter batch failed");
+ assert_that(provider_calls==1&&sizes==std::vector<int64_t>({6}),"constant model/dimension lost input rows");
+ assert_that(expr.datum[2].text.value=="third:4"&&!expr.datum[2].is_null(),"constant dimension misread after row zero");
+ assert_that(expr.datum[6].text.value=="seventh:4"&&!expr.datum[6].is_null(),"constant model misread in later rows");
+ input.batch_result=false;input.datum[0].null=false;input.datum[0].text=ObString("constant-input");
+ provider_calls=0;sizes.clear();expr.evaluated.items.assign(12,false);
+ ret=ObExprAIEmbed::eval_ai_embed_batch(expr,ctx,skip,8);
+ assert_that(ret==0&&provider_calls==1&&sizes==std::vector<int64_t>({7}),"constant content lost rows");
+ assert_that(expr.datum[6].text.value=="constant-input:4","constant content mapping failed");
+ // A second evaluation of an already completed batch must not repeat I/O.
+ provider_calls=0;
+ assert_that(ObExprAIEmbed::eval_ai_embed_batch(expr,ctx,skip,8)==0&&provider_calls==0,"completed batch repeated requests");
+ // Failures preserve an error result and do not mark live rows as evaluated.
+ expr.evaluated.items.assign(12,false);forced_provider_error=OB_ERR_UNEXPECTED;provider_calls=0;
+ assert_that(ObExprAIEmbed::eval_ai_embed_batch(expr,ctx,skip,8)==OB_ERR_UNEXPECTED,"provider error lost");
+ assert_that(provider_calls==1&&!expr.evaluated.at(0),"failed provider result marked ready");
+ forced_provider_error=0;return_short_batch=true;expr.evaluated.items.assign(12,false);
+ assert_that(ObExprAIEmbed::eval_ai_embed_batch(expr,ctx,skip,8)==OB_INVALID_DATA,"missing result accepted");
+ assert_that(!expr.evaluated.at(0),"partial result scattered before size validation");
+ return_short_batch=false;provider_calls=0;expr.evaluated.items.assign(12,false);
+ ObBitVector all_skip{{true,true,true,true,true,true,true,true}};
+ assert_that(ObExprAIEmbed::eval_ai_embed_batch(expr,ctx,all_skip,8)==0&&provider_calls==0,"all-skipped batch requested provider");
+ input.datum[0].null=true;provider_calls=0;expr.evaluated.items.assign(12,false);
+ assert_that(ObExprAIEmbed::eval_ai_embed_batch(expr,ctx,skip,8)==0&&provider_calls==0,"all-NULL batch requested provider");
+ assert_that(expr.datum[6].is_null(),"all-NULL batch did not broadcast NULL");
+ std::cout<<"PASS: grouped runtime batch checks (NULL, skip, dimensions, scatter, scalar constants, failures, empty batches)\n";
 }
 '''
 with tempfile.TemporaryDirectory() as d:

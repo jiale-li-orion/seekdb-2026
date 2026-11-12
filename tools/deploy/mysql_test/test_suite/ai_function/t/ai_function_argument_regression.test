@@ -1,0 +1,61 @@
+# Regression coverage for native argument addressing and optional SQL NULL arguments.
+# Uses the same Mock AI Service as ai_function_enhancement.test.
+connection default;
+--disable_query_log
+--disable_result_log
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL('regress_complete');
+--error 0,11112
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('regress_complete_ep');
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL('regress_embed');
+--error 0,11112
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('regress_embed_ep');
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL('regress_rerank');
+--error 0,11112
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('regress_rerank_ep');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('regress_complete', '{"type":"completion","model_name":"qwen3-32b"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('regress_complete_ep', '{"ai_model_name":"regress_complete","scope":"all","url":"http://0.0.0.0:8000/compatible-mode/v1/chat/completions","access_key":"mock-key","provider":"openai"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('regress_embed', '{"type":"dense_embedding","model_name":"text-embedding-v1"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('regress_embed_ep', '{"ai_model_name":"regress_embed","scope":"all","url":"http://0.0.0.0:8000/compatible-mode/v1/embeddings","access_key":"mock-key","provider":"openai"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('regress_rerank', '{"type":"rerank","model_name":"BAAI/bge-reranker-v2-m3"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('regress_rerank_ep', '{"ai_model_name":"regress_rerank","scope":"all","url":"http://0.0.0.0:8000/v1/rerank","access_key":"mock-key","provider":"siliconflow"}');
+--disable_warnings
+drop table if exists ai_argument_regression;
+--enable_warnings
+create table ai_argument_regression(id int primary key, body text, model_id varchar(64), dim int);
+insert into ai_argument_regression values
+  (1,'first','regress_embed',768), (2,null,'regress_embed',768),
+  (3,'third','regress_embed',768), (4,'fourth','regress_embed',768);
+--enable_result_log
+
+# Omitted and SQL NULL config both use defaults; native JSON is parsed as JSON.
+select length(ai_complete('regress_complete','hello')) > 0 as complete_omitted;
+select length(ai_complete('regress_complete','hello',null)) > 0 as complete_null;
+select length(ai_complete('regress_complete','hello',json_object('temperature',0.2,'max_tokens',16))) > 0 as complete_json;
+
+# Literals occupy scalar datum slots and broadcast to every selected row.
+select id, json_length(ai_embed('regress_embed',body,768)) as dim from ai_argument_regression order by id;
+# Dynamic columns take the per-row datum path.
+select id, json_length(ai_embed(model_id,body,dim)) as dim from ai_argument_regression where id >= 3 order by id;
+# Predicate + LIMIT leave the selected rows aligned with their output vectors.
+select id, json_length(ai_embed('regress_embed',body)) as dim from ai_argument_regression where body is not null order by id limit 2;
+# Re-evaluate another query/batch after the preceding limit.
+select id, json_length(ai_embed('regress_embed',body,768)) as dim from ai_argument_regression where id = 4;
+
+# Optional NULL document key preserves string-array mode.
+select json_length(ai_rerank('regress_rerank','apple','["apple","banana"]')) as rerank_omitted;
+select json_length(ai_rerank('regress_rerank','apple','["apple","banana"]',null)) as rerank_null;
+select json_length(ai_rerank('regress_rerank','apple','[{"id":"a","text":"apple"},{"id":"b","text":"banana"}]','text')) as rerank_objects;
+
+--disable_result_log
+drop table ai_argument_regression;
+call DBMS_AI_SERVICE.DROP_AI_MODEL('regress_complete');
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('regress_complete_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('regress_embed');
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('regress_embed_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('regress_rerank');
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('regress_rerank_ep');
+--enable_result_log
+--enable_query_log

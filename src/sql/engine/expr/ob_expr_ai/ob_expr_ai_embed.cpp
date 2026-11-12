@@ -148,15 +148,13 @@ int ObExprAIEmbed::eval_ai_embed_batch(const ObExpr &expr, ObEvalCtx &ctx,
                                        const ObBitVector &skip, const int64_t batch_size)
 {
   INIT_SUCC(ret);
-  // Let the SQL executor evaluate scalar arguments with its native skip mask;
-  // rows removed by WHERE/LIMIT never enter the remote request.
+  // Respect rows already skipped by the executor. Argument datum addressing
+  // must broadcast scalar constants and index only true batch expressions.
   if (OB_FAIL(expr.args_[MODEL_IDX]->eval_batch(ctx, skip, batch_size))) {
   } else if (OB_FAIL(expr.args_[CONTENT_IDX]->eval_batch(ctx, skip, batch_size))) {
   } else if (expr.arg_cnt_ == 3 && OB_FAIL(expr.args_[DIM_IDX]->eval_batch(ctx, skip, batch_size))) {
   } else {
-    ObDatum *models = expr.args_[MODEL_IDX]->locate_batch_datums(ctx);
-    ObDatum *inputs = expr.args_[CONTENT_IDX]->locate_batch_datums(ctx);
-    ObDatum *dimensions = expr.arg_cnt_ == 3 ? expr.args_[DIM_IDX]->locate_batch_datums(ctx) : nullptr;
+    const bool has_dimension = expr.arg_cnt_ == 3;
     ObDatum *outputs = expr.locate_batch_datums(ctx);
     ObBitVector &evaluated = expr.get_evaluated_flags(ctx);
     ObEvalCtx::TempAllocGuard allocation(ctx);
@@ -177,19 +175,23 @@ int ObExprAIEmbed::eval_ai_embed_batch(const ObExpr &expr, ObEvalCtx &ctx,
     for (int64_t row = 0; OB_SUCC(ret) && row < batch_size; ++row) {
       if (skip.at(row) || evaluated.at(row) || covered.at(row)) {
         continue;
-      } else if (inputs[row].is_null() || (dimensions != nullptr && dimensions[row].is_null())) {
+      }
+      ObDatum &model_datum = expr.args_[MODEL_IDX]->locate_expr_datum(ctx, row);
+      ObDatum &input_datum = expr.args_[CONTENT_IDX]->locate_expr_datum(ctx, row);
+      ObDatum *dimension_datum = has_dimension ? &expr.args_[DIM_IDX]->locate_expr_datum(ctx, row) : nullptr;
+      if (input_datum.is_null() || (dimension_datum != nullptr && dimension_datum->is_null())) {
         outputs[row].set_null();
         evaluated.set(row);
         covered.at(row) = true;
         continue;
-      } else if (models[row].is_null()) {
+      } else if (model_datum.is_null()) {
         ret = OB_INVALID_ARGUMENT;
         LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, model id is null");
         break;
       }
-      const ObString model_id = models[row].get_string();
-      const int64_t requested_dim = dimensions == nullptr ? 0 : dimensions[row].get_int();
-      if (model_id.empty() || requested_dim < 0 || (dimensions != nullptr && requested_dim == 0)) {
+      const ObString model_id = model_datum.get_string();
+      const int64_t requested_dim = dimension_datum == nullptr ? 0 : dimension_datum->get_int();
+      if (model_id.empty() || requested_dim < 0 || (has_dimension && requested_dim == 0)) {
         ret = OB_INVALID_ARGUMENT;
         LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, invalid model or dimension");
         break;
@@ -200,19 +202,24 @@ int ObExprAIEmbed::eval_ai_embed_batch(const ObExpr &expr, ObEvalCtx &ctx,
       for (int64_t candidate = row; OB_SUCC(ret) && candidate < batch_size; ++candidate) {
         if (skip.at(candidate) || evaluated.at(candidate) || covered.at(candidate)) {
           continue;
-        } else if (inputs[candidate].is_null() || (dimensions != nullptr && dimensions[candidate].is_null())) {
+        }
+        ObDatum &candidate_model = expr.args_[MODEL_IDX]->locate_expr_datum(ctx, candidate);
+        ObDatum &candidate_input = expr.args_[CONTENT_IDX]->locate_expr_datum(ctx, candidate);
+        ObDatum *candidate_dim = has_dimension ? &expr.args_[DIM_IDX]->locate_expr_datum(ctx, candidate) : nullptr;
+        if (candidate_input.is_null() || (candidate_dim != nullptr && candidate_dim->is_null())) {
           outputs[candidate].set_null();
           evaluated.set(candidate);
           covered.at(candidate) = true;
           continue;
-        } else if (models[candidate].is_null() || models[candidate].get_string() != model_id
-                   || (dimensions != nullptr && dimensions[candidate].get_int() != requested_dim)) {
+        } else if (candidate_model.is_null() || candidate_model.get_string() != model_id
+                   || (candidate_dim != nullptr && candidate_dim->get_int() != requested_dim)) {
           continue;
         }
 
         ObString content;
+        batch_guard.set_batch_idx(candidate);
         if (OB_FAIL(ObTextStringHelper::read_real_string_data(
-                ctx.exec_ctx_, allocator, inputs[candidate], expr.args_[CONTENT_IDX]->datum_meta_,
+                ctx.exec_ctx_, allocator, candidate_input, expr.args_[CONTENT_IDX]->datum_meta_,
                 expr.args_[CONTENT_IDX]->obj_meta_.has_lob_header(), content))) {
         } else if (content.empty()) {
           ret = OB_INVALID_ARGUMENT;
