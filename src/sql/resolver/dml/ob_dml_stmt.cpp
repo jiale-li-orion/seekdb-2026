@@ -179,6 +179,8 @@ int TableItem::deep_copy(ObIRawExprCopier &expr_copier,
   for_update_ = other.for_update_;
   for_update_wait_us_ = other.for_update_wait_us_;
   skip_locked_ = other.skip_locked_;
+  file_sql_format_ = other.file_sql_format_;
+  file_sql_path_ = other.file_sql_path_;
   node_ = other.node_; // should deep copy ? seems to be unnecessary
   snapshot_query_type_ = other.snapshot_query_type_;
   // ddl related
@@ -190,6 +192,9 @@ int TableItem::deep_copy(ObIRawExprCopier &expr_copier,
       && OB_FAIL(deep_copy_json_table_def(*other.json_table_def_, expr_copier, allocator))) {
   } else if (OB_FAIL(expr_copier.copy(other.snapshot_query_expr_, snapshot_query_expr_))) {
   } else if (OB_FAIL(expr_copier.copy(other.function_table_expr_, function_table_expr_))) {
+  } else if (OB_FAIL(file_sql_names_.assign(other.file_sql_names_))) {
+  } else if (OB_FAIL(file_sql_types_.assign(other.file_sql_types_))) {
+  } else if (OB_FAIL(file_sql_nullables_.assign(other.file_sql_nullables_))) {
   } else if (OB_FAIL(part_ids_.assign(other.part_ids_))) {
   } else if (OB_FAIL(part_names_.assign(other.part_names_))) {
   } else if (is_values_table() &&

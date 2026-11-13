@@ -337,6 +337,7 @@ END_P SET_VAR DELIMITER
         REWRITE ROLLBACK ROLLUP ROUTINE ROW ROWID ROW_COUNT ROW_FORMAT ROWS RTREE
         RUN RECYCLEBIN REPLICATION ROTATE ROW_NUMBER RUDUNDANT RECURSIVE RANDOM REDO_TRANSPORT_OPTIONS
         RANK READ_ONLY RECOVERY REJECT ROLE
+        READ_CSV READ_JSON READ_NDJSON READ_PARQUET
 
         SAMPLE SAVEPOINT SCALARS SCHEMA_NAME SCN SCOPE SCORE SECOND SECURITY SEED
         SEMISTRUCT_ENCODING_TYPE SERIAL SERIALIZABLE SESSION SESSION_USER SET_TP SHARE SHARED SHUTDOWN SIGNED
@@ -406,6 +407,7 @@ END_P SET_VAR DELIMITER
 %type <node> sort_list sort_key opt_asc_desc sort_list_for_group_by sort_key_for_group_by opt_asc_desc_for_group_by sort_list_opt_null sort_key_opt_null opt_asc_desc_null
 %type <node> opt_query_expression_option_list query_expression_option_list query_expression_option opt_distinct opt_distinct_or_all opt_separator projection
 %type <node> from_list table_references table_reference table_factor normal_relation_factor dot_relation_factor relation_factor
+%type <node> file_sql_table_factor
 %type <node> relation_factor_in_hint relation_factor_in_hint_list relation_factor_in_pq_hint opt_relation_factor_in_hint_list relation_factor_in_use_join_hint_list
 %type <node> relation_factor_in_leading_hint_list joined_table tbl_name table_subquery table_subquery_alias
 %type <node> relation_factor_with_star relation_with_star_list opt_with_star
@@ -10847,6 +10849,75 @@ tbl_name
 | hybrid_search_expr
 {
   $$ = $1;
+}
+| file_sql_table_factor
+{
+  $$ = $1;
+}
+;
+
+// MySQL table functions are resolved as native streaming table sources.
+// The function name is validated by the resolver, without invoking a UDF.
+file_sql_table_factor:
+READ_CSV '(' expr_list ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_TABLE_EXPRESSION, 2, $3, NULL);
+  $$->value_ = 1;
+}
+| READ_CSV '(' expr_list ')' relation_name
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_TABLE_EXPRESSION, 2, $3, $5);
+  $$->value_ = 1;
+}
+| READ_CSV '(' expr_list ')' AS relation_name
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_TABLE_EXPRESSION, 2, $3, $6);
+  $$->value_ = 1;
+}
+| READ_JSON '(' expr_list ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_TABLE_EXPRESSION, 2, $3, NULL);
+  $$->value_ = 2;
+}
+| READ_JSON '(' expr_list ')' relation_name
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_TABLE_EXPRESSION, 2, $3, $5);
+  $$->value_ = 2;
+}
+| READ_JSON '(' expr_list ')' AS relation_name
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_TABLE_EXPRESSION, 2, $3, $6);
+  $$->value_ = 2;
+}
+| READ_NDJSON '(' expr_list ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_TABLE_EXPRESSION, 2, $3, NULL);
+  $$->value_ = 2;
+}
+| READ_NDJSON '(' expr_list ')' relation_name
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_TABLE_EXPRESSION, 2, $3, $5);
+  $$->value_ = 2;
+}
+| READ_NDJSON '(' expr_list ')' AS relation_name
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_TABLE_EXPRESSION, 2, $3, $6);
+  $$->value_ = 2;
+}
+| READ_PARQUET '(' expr_list ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_TABLE_EXPRESSION, 2, $3, NULL);
+  $$->value_ = 3;
+}
+| READ_PARQUET '(' expr_list ')' relation_name
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_TABLE_EXPRESSION, 2, $3, $5);
+  $$->value_ = 3;
+}
+| READ_PARQUET '(' expr_list ')' AS relation_name
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_TABLE_EXPRESSION, 2, $3, $6);
+  $$->value_ = 3;
 }
 ;
 

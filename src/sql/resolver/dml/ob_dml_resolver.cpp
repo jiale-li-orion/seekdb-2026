@@ -41,6 +41,9 @@
 #include "sql/resolver/dcl/ob_dcl_resolver.h"
 #include "sql/resolver/ddl/ob_ddl_resolver.h"
 #include "sql/hybrid_search/ob_hybrid_search_executor.h"
+#include "sql/engine/basic/file_sql/ob_file_scan_core.h"
+#include <exception>
+#include <string>
 
 namespace oceanbase
 {
@@ -2701,6 +2704,10 @@ int ObDMLResolver::resolve_table(const ParseNode &parse_tree,
         OZ (resolve_function_table_item(*table_node, table_item));
         break;
       }
+      case T_FILE_SQL_TABLE_EXPRESSION: {
+        OZ (resolve_file_sql_table_item(*table_node, table_item));
+        break;
+      }
       case T_JSON_TABLE_EXPRESSION: {
         OZ (resolve_json_table_item(*table_node, table_item));
         break;
@@ -3919,6 +3926,93 @@ int ObDMLResolver::resolve_json_table_item(const ParseNode &parse_tree, TableIte
   } else if (OB_FAIL(json_table_infos_.push_back(root_col_def))) {
   } else if (OB_FAIL(resolve_json_table_column_item(*chil_col_node, item,
                                                     root_col_def, -1, id, cur_column_id))) {
+  }
+  return ret;
+}
+
+int ObDMLResolver::resolve_file_sql_table_item(const ParseNode &parse_tree,
+                                               TableItem *&table_item)
+{
+  int ret = OB_SUCCESS;
+  ObDMLStmt *stmt = get_stmt();
+  TableItem *item = nullptr;
+  ObRawExpr *path_expr = nullptr;
+  ObString secure_root;
+  ObString alias;
+  bool file_sql_enabled = false;
+  const ParseNode *args = parse_tree.num_child_ == 2 ? parse_tree.children_[0] : nullptr;
+  const ParseNode *path = args != nullptr && args->num_child_ >= 1 ? args->children_[0] : nullptr;
+  if (OB_ISNULL(stmt) || OB_ISNULL(session_info_) || OB_ISNULL(allocator_)
+      || OB_ISNULL(args) || args->type_ != T_EXPR_LIST || OB_ISNULL(path)
+      || path->type_ != T_VARCHAR || OB_ISNULL(path->str_value_)
+      || args->num_child_ != 1) {
+    // Dynamic paths and named scan options are addressed separately; resolve
+    // only the constant-file form before exposing inferred SQL columns.
+    ret = OB_NOT_SUPPORTED;
+  } else if (OB_FAIL(session_info_->get_sys_variable(share::SYS_VAR_ENABLE_FILE_SQL, file_sql_enabled))) {
+  } else if (!file_sql_enabled) {
+    ret = OB_NOT_SUPPORTED;
+  } else if (parse_tree.value_ != 1 && parse_tree.value_ != 2) {
+    ret = OB_NOT_SUPPORTED;  // Parquet requires a separate native reader.
+  } else if (OB_FAIL(session_info_->get_secure_file_priv(secure_root))) {
+  } else if (secure_root.empty()) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "file SQL requires secure_file_priv");
+  } else if (OB_FAIL(resolve_sql_expr(*path, path_expr))) {
+  } else if (OB_ISNULL(item = stmt->create_table_item(*allocator_))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else {
+    item->file_sql_format_ = static_cast<int32_t>(parse_tree.value_);
+    item->type_ = TableItem::FUNCTION_TABLE;
+    item->table_id_ = generate_table_id();
+    item->is_system_table_ = false;
+    item->function_table_expr_ = path_expr;
+    if (OB_NOT_NULL(parse_tree.children_[1])) {
+      const ParseNode *name = parse_tree.children_[1];
+      alias.assign_ptr(name->str_value_, name->str_len_);
+      item->alias_name_ = alias;
+      item->table_name_ = alias;
+    } else if (OB_FAIL(stmt->generate_func_table_name(*allocator_, alias))) {
+    } else {
+      item->table_name_ = alias;
+    }
+    if (OB_SUCC(ret)) {
+      const std::string filename(path->str_value_, path->str_len_);
+      const std::string root(secure_root.ptr(), secure_root.length());
+      try {
+        file_sql::Reader reader(filename,
+                                item->file_sql_format_ == 1 ? file_sql::Reader::Format::csv
+                                                             : file_sql::Reader::Format::jsonl, root);
+        file_sql::Schema schema = reader.infer();
+        if (schema.columns.empty()) {
+          ret = OB_INVALID_ARGUMENT;
+        } else {
+          for (const auto &column : schema.columns) {
+            ObString column_name;
+            ObString source(static_cast<int32_t>(column.name.size()), column.name.data());
+            if (OB_FAIL(ob_write_string(*allocator_, source, column_name))) {
+            } else if (OB_FAIL(item->file_sql_names_.push_back(column_name))) {
+            } else if (OB_FAIL(item->file_sql_types_.push_back(static_cast<int32_t>(column.kind)))) {
+            } else if (OB_FAIL(item->file_sql_nullables_.push_back(column.nullable))) {
+            }
+            if (OB_FAIL(ret)) break;
+          }
+        }
+      } catch (const std::exception &error) {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_WARN("file table schema inference failed", K(ret), "reason", error.what());
+      }
+    }
+    if (OB_SUCC(ret) && OB_FAIL(ob_write_string(*allocator_,
+          ObString(path->str_len_, path->str_value_), item->file_sql_path_))) {
+    } else if (OB_SUCC(ret) && OB_FAIL(stmt->add_table_item(session_info_, item))) {
+    } else if (OB_SUCC(ret)) {
+      ObSEArray<ColumnItem, 16> columns;
+      if (OB_FAIL(resolve_function_table_column_item(*item, columns))) {
+      } else {
+        table_item = item;
+      }
+    }
   }
   return ret;
 }
@@ -6779,9 +6873,12 @@ int ObDMLResolver::resolve_function_table_column_item(const TableItem &table_ite
     //exist, ignore resolve...
   } else {
     ObSEArray<ColumnItem, 16> col_items;
-    OZ (ObResolverUtils::check_function_table_column_exist(table_item,
-                                                           params_,
-                                                           column_name));
+    // Native file tables expose columns discovered at binding time; the
+    // generic table-function checker only understands COLUMN_VALUE.
+    if (table_item.file_sql_format_ == 0) {
+      OZ (ObResolverUtils::check_function_table_column_exist(table_item,
+                                                             params_, column_name));
+    }
     OZ (resolve_function_table_column_item(table_item, col_items));
     for (int64_t i = 0; OB_SUCC(ret) && i < stmt->get_column_size(); ++i) {
       ColumnItem* column_item = stmt->get_column_item(i);
@@ -7475,7 +7572,29 @@ int ObDMLResolver::resolve_function_table_column_item(const TableItem &table_ite
   CK (OB_LIKELY(table_item.is_function_table()));
   CK (OB_NOT_NULL(table_item.function_table_expr_));
   if (OB_SUCC(ret)) {
-    if (table_item.function_table_expr_->get_result_type().is_ext()) {
+    if (table_item.file_sql_format_ != 0) {
+      for (int64_t i = 0; OB_SUCC(ret) && i < table_item.file_sql_names_.count(); ++i) {
+        const file_sql::Kind kind =
+            static_cast<file_sql::Kind>(table_item.file_sql_types_.at(i));
+        ObObjMeta type;
+        switch (kind) {
+          case file_sql::Kind::boolean: type.set_type(ObTinyIntType); break;
+          case file_sql::Kind::bigint: type.set_type(ObIntType); break;
+          case file_sql::Kind::double_value: type.set_type(ObDoubleType); break;
+          case file_sql::Kind::date: type.set_type(ObDateType); break;
+          case file_sql::Kind::datetime: type.set_type(ObDateTimeType); break;
+          default: type.set_type(ObVarcharType); break;
+        }
+        ObAccuracy accuracy(PRECISION_UNKNOWN_YET, SCALE_UNKNOWN_YET);
+        ColumnItem *column = get_stmt()->get_column_item(
+            table_item.table_id_, table_item.file_sql_names_.at(i));
+        if (column == nullptr && OB_FAIL(resolve_function_table_column_item(
+                table_item, type, accuracy, table_item.file_sql_names_.at(i),
+                OB_APP_MIN_COLUMN_ID + i, column))) {
+        } else if (OB_SUCC(ret) && OB_FAIL(col_items.push_back(*column))) {
+        }
+      }
+    } else if (table_item.function_table_expr_->get_result_type().is_ext()) {
       ret = resolve_function_table_column_item_udf(table_item, col_items);
     } else {
       ret = resolve_function_table_column_item_sys_func(table_item, col_items);

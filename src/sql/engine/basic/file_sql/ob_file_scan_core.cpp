@@ -83,7 +83,8 @@ Kind json_kind(const rapidjson::Value& value) {
 } // namespace
 
 Kind infer_kind(const Cell& cell) {
-  if (cell.is_null || cell.value.empty()) return Kind::null_value;
+  if (cell.is_null) return Kind::null_value;
+  if (cell.value.empty()) return Kind::varchar;
   const std::string& value = cell.value;
   if (value == "true" || value == "false") return Kind::boolean;
   int64_t integer = 0;

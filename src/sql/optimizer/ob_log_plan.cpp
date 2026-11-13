@@ -2239,6 +2239,7 @@ int ObLogPlan::allocate_function_table_path(FunctionTablePath *func_table_path,
     ret = OB_ALLOCATE_MEMORY_FAILED;
   } else {
     op->set_table_id(func_table_path->table_id_);
+    op->set_file_sql_format(table_item->file_sql_format_);
     op->add_values_expr(func_table_path->value_expr_);
     op->set_table_name(table_item->get_table_name());
     if (OB_FAIL(append(op->get_filter_exprs(), func_table_path->filter_))) {
