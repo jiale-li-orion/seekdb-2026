@@ -1,11 +1,12 @@
 #include "sql/engine/basic/file_sql/ob_file_scan_core.h"
 #include <cassert>
 #include <iostream>
+#include <filesystem>
 #include <stdexcept>
 using namespace oceanbase::sql::file_sql;
 int main(int argc, char** argv) {
  assert(argc == 3);
- Reader csv(argv[1], Reader::Format::csv);
+ Reader csv(argv[1], Reader::Format::csv, std::filesystem::path(argv[1]).parent_path().string());
  Schema s = csv.infer();
  assert(s.columns.size() == 8);
  assert(s.columns[0].name == "id" && s.columns[7].name == "id__2");
@@ -18,7 +19,7 @@ int main(int argc, char** argv) {
  assert(csv.next(row) && row[5].value == "2026-08-03 12:13:14" && row[6].value == "say \"hi\"");
  assert(!csv.next(row));
  csv.rewind(); assert(csv.next(row) && row[0].value == "1");
- Reader json(argv[2], Reader::Format::jsonl);
+ Reader json(argv[2], Reader::Format::jsonl, std::filesystem::path(argv[2]).parent_path().string());
  s = json.infer(); assert(s.columns.size() == 6);
  assert(s.columns[0].name == "id" && s.columns[2].name == "score");
  assert(s.columns[2].kind == Kind::double_value && s.columns[2].nullable);

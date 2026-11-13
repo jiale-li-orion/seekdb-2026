@@ -38,7 +38,7 @@ struct Schema {
 class Reader {
  public:
   enum class Format { csv, jsonl };
-  Reader(std::string path, Format format, bool header = true);
+  Reader(std::string path, Format format, std::string secure_root, bool header = true);
   Schema infer();
   void open();
   bool next(std::vector<Cell>& row);
@@ -51,6 +51,7 @@ class Reader {
   bool next_jsonl(std::vector<Cell>& row);
   void reset_stream();
   std::string path_;
+  std::string secure_root_;
   Format format_;
   bool header_;
   std::ifstream stream_;

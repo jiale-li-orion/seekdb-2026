@@ -118,10 +118,29 @@ const char* kind_name(Kind kind) {
   return "VARCHAR";
 }
 
-Reader::Reader(std::string path, Format format, bool header)
-    : path_(std::move(path)), format_(format), header_(header) {}
+Reader::Reader(std::string path, Format format, std::string secure_root, bool header)
+    : path_(std::move(path)), secure_root_(std::move(secure_root)),
+      format_(format), header_(header) {
+  if (secure_root_.empty()) throw std::invalid_argument("secure_file_priv root required");
+}
 
 void Reader::reset_stream() {
+  {
+    // Canonicalize both paths and compare components, not string prefixes.
+    // A sibling named /allowed-evil must never inherit /allowed privileges.
+    const auto root = std::filesystem::canonical(secure_root_);
+    const auto path = std::filesystem::canonical(path_);
+    auto root_it = root.begin();
+    auto path_it = path.begin();
+    for (; root_it != root.end(); ++root_it, ++path_it) {
+      if (path_it == path.end() || *root_it != *path_it) {
+        throw std::runtime_error("file path escapes secure_file_priv");
+      }
+    }
+    if (!std::filesystem::is_regular_file(path)) {
+      throw std::runtime_error("source must be a regular file");
+    }
+  }
   stream_.close();
   stream_.clear();
   stream_.open(path_, std::ios::binary);
