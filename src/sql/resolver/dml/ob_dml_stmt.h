@@ -151,6 +151,7 @@ struct TableItem
     snapshot_query_type_ = SnapshotQueryType::NOT_USING;
     function_table_expr_ = nullptr;
     file_sql_format_ = 0;
+    file_sql_header_ = true;
     ddl_schema_version_ = 0;
     ddl_table_id_ = common::OB_INVALID_ID;
     json_table_def_ = nullptr;
@@ -297,6 +298,7 @@ struct TableItem
   // File table columns are inferred before SQL name resolution and preserved
   // through optimizer copies; 0 denotes a normal table function.
   int32_t file_sql_format_;
+  bool file_sql_header_;
   common::ObString file_sql_path_;
   common::ObSEArray<common::ObString, 8, common::ModulePageAllocator, true> file_sql_names_;
   common::ObSEArray<int32_t, 8, common::ModulePageAllocator, true> file_sql_types_;

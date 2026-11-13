@@ -53,6 +53,16 @@ int main(int argc, char** argv) {
   detected = false;
   try { Reader malformed(csv_path.string(), Reader::Format::csv, root.string()); malformed.infer(); } catch (const std::runtime_error&) { detected = true; }
   assert(detected);
+  const auto noheader_path = root / "noheader.csv";
+  { std::ofstream f(noheader_path); f << "1,Alice\n2,Bob\n"; }
+  Reader noheader(noheader_path.string(), Reader::Format::csv, root.string(), false);
+  Schema noheader_schema = noheader.infer();
+  assert(noheader_schema.columns.size() == 2);
+  assert(noheader_schema.columns[0].name == "column1" && noheader_schema.columns[0].kind == Kind::bigint);
+  assert(noheader_schema.columns[1].name == "column2" && noheader_schema.columns[1].kind == Kind::varchar);
+  assert(noheader.next(r) && r[0].value == "1" && r[1].value == "Alice");
+  assert(noheader.next(r) && r[0].value == "2");
+  assert(!noheader.next(r));
   const auto json_path = root / "nested.jsonl";
   { std::ofstream f(json_path); f << "{\"x\":1}\n{\"x\":2,\"y\":{\"z\":3}}\n"; }
   detected = false;

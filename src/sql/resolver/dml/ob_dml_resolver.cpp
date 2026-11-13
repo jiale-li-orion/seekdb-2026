@@ -3930,6 +3930,72 @@ int ObDMLResolver::resolve_json_table_item(const ParseNode &parse_tree, TableIte
   return ret;
 }
 
+namespace {
+
+// SQL grammar represents `header = true` as a comparison expression; in
+// file table position it is a named option, not a row predicate. Inspect
+// the original AST so no column resolution or expression execution occurs.
+int resolve_file_sql_options(const ParseNode &args, int32_t format, bool &header)
+{
+  int ret = OB_SUCCESS;
+  bool saw_header = false;
+  bool saw_sample = false;
+  bool saw_format = false;
+  header = true;
+  for (int32_t i = 1; OB_SUCC(ret) && i < args.num_child_; ++i) {
+    const ParseNode *option = args.children_[i];
+    if (option == nullptr || option->type_ != T_OP_EQ || option->num_child_ != 2
+        || option->children_[0] == nullptr || option->children_[1] == nullptr) {
+      // Additional unnamed arguments are invalid file table syntax.
+      ret = OB_ERR_PARSE_SQL;
+      break;
+    }
+    const ParseNode *column = option->children_[0];
+    const ParseNode *value = option->children_[1];
+    if (column->type_ != T_COLUMN_REF || column->num_child_ != 3
+        || column->children_[0] != nullptr || column->children_[1] != nullptr
+        || column->children_[2] == nullptr || column->children_[2]->str_value_ == nullptr) {
+      ret = OB_ERR_PARSE_SQL;
+      break;
+    }
+    const ParseNode *name_node = column->children_[2];
+    const ObString name(name_node->str_len_, name_node->str_value_);
+    if (name.case_compare("header") == 0) {
+      if (format != 1 || saw_header || value->type_ != T_BOOL) {
+        ret = OB_INVALID_ARGUMENT;
+      } else {
+        header = value->value_ != 0;
+        saw_header = true;
+      }
+    } else if (name.case_compare("sample_size") == 0) {
+      bool all_rows = value->type_ == T_INT && value->value_ == -1;
+      if (value->type_ == T_OP_NEG && value->num_child_ == 1
+          && value->children_[0] != nullptr) {
+        all_rows = value->children_[0]->value_ == 1;
+      }
+      if (saw_sample || !all_rows) {
+        ret = OB_NOT_SUPPORTED;  // Only full-file schema inference is supported.
+      } else {
+        saw_sample = true;
+      }
+    } else if (name.case_compare("format") == 0) {
+      const ObString expected("newline_delimited");
+      if (format != 2 || saw_format || value->type_ != T_VARCHAR
+          || value->str_value_ == nullptr
+          || ObString(value->str_len_, value->str_value_).case_compare(expected) != 0) {
+        ret = OB_NOT_SUPPORTED;
+      } else {
+        saw_format = true;
+      }
+    } else {
+      ret = OB_NOT_SUPPORTED;
+    }
+  }
+  return ret;
+}
+
+} // namespace
+
 int ObDMLResolver::resolve_file_sql_table_item(const ParseNode &parse_tree,
                                                TableItem *&table_item)
 {
@@ -3940,20 +4006,21 @@ int ObDMLResolver::resolve_file_sql_table_item(const ParseNode &parse_tree,
   ObString secure_root;
   ObString alias;
   bool file_sql_enabled = false;
+  bool file_sql_header = true;
   const ParseNode *args = parse_tree.num_child_ == 2 ? parse_tree.children_[0] : nullptr;
   const ParseNode *path = args != nullptr && args->num_child_ >= 1 ? args->children_[0] : nullptr;
   if (OB_ISNULL(stmt) || OB_ISNULL(session_info_) || OB_ISNULL(allocator_)
       || OB_ISNULL(args) || args->type_ != T_EXPR_LIST || OB_ISNULL(path)
-      || path->type_ != T_VARCHAR || OB_ISNULL(path->str_value_)
-      || args->num_child_ != 1) {
-    // Dynamic paths and named scan options are addressed separately; resolve
-    // only the constant-file form before exposing inferred SQL columns.
+      || path->type_ != T_VARCHAR || OB_ISNULL(path->str_value_)) {
+    // Dynamic paths are resolved after native file-table binding is extended.
     ret = OB_NOT_SUPPORTED;
   } else if (OB_FAIL(session_info_->get_sys_variable(share::SYS_VAR_ENABLE_FILE_SQL, file_sql_enabled))) {
   } else if (!file_sql_enabled) {
     ret = OB_NOT_SUPPORTED;
   } else if (parse_tree.value_ != 1 && parse_tree.value_ != 2) {
     ret = OB_NOT_SUPPORTED;  // Parquet requires a separate native reader.
+  } else if (OB_FAIL(resolve_file_sql_options(*args,
+                 static_cast<int32_t>(parse_tree.value_), file_sql_header))) {
   } else if (OB_FAIL(session_info_->get_secure_file_priv(secure_root))) {
   } else if (secure_root.empty()) {
     ret = OB_NOT_SUPPORTED;
@@ -3963,6 +4030,7 @@ int ObDMLResolver::resolve_file_sql_table_item(const ParseNode &parse_tree,
     ret = OB_ALLOCATE_MEMORY_FAILED;
   } else {
     item->file_sql_format_ = static_cast<int32_t>(parse_tree.value_);
+    item->file_sql_header_ = file_sql_header;
     item->type_ = TableItem::FUNCTION_TABLE;
     item->table_id_ = generate_table_id();
     item->is_system_table_ = false;
@@ -3982,7 +4050,7 @@ int ObDMLResolver::resolve_file_sql_table_item(const ParseNode &parse_tree,
       try {
         file_sql::Reader reader(filename,
                                 item->file_sql_format_ == 1 ? file_sql::Reader::Format::csv
-                                                             : file_sql::Reader::Format::jsonl, root);
+                                                             : file_sql::Reader::Format::jsonl, root, file_sql_header);
         file_sql::Schema schema = reader.infer();
         if (schema.columns.empty()) {
           ret = OB_INVALID_ARGUMENT;

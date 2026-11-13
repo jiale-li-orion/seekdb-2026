@@ -36,19 +36,24 @@ assert "file_sql::Reader reader" in resolver
 assert "file_sql_names_.push_back" in resolver
 assert "resolve_function_table_column_item(*item, columns)" in resolver
 assert "get_sys_variable(share::SYS_VAR_ENABLE_FILE_SQL" in resolver
+assert "resolve_file_sql_options" in resolver and "file_sql_header_ = file_sql_header" in resolver
 
 stmt = read("src/sql/resolver/dml/ob_dml_stmt.h")
 for name in ("file_sql_format_", "file_sql_path_", "file_sql_names_", "file_sql_types_"):
     assert name in stmt
 assert "file_sql_names_.assign(other.file_sql_names_)" in read("src/sql/resolver/dml/ob_dml_stmt.cpp")
+assert "file_sql_header_ = other.file_sql_header_" in read("src/sql/resolver/dml/ob_dml_stmt.cpp")
 
 logical = read("src/sql/optimizer/ob_log_function_table.h")
 plan = read("src/sql/optimizer/ob_log_plan.cpp")
 assert "file_sql_format_" in logical and "set_file_sql_format" in plan
+assert "set_file_sql_header" in plan and "file_sql_header_" in logical
 cg = read("src/sql/code_generator/ob_static_engine_cg.cpp")
 assert "file_column_indices_.push_back" in cg
+assert "spec.file_sql_header_ = op.get_file_sql_header()" in cg
 spec = read("src/sql/engine/basic/ob_function_table_op.h")
 assert "file_column_indices_" in spec and "file_sql_format_" in spec
+assert "file_sql_header_" in spec
 runtime = read("src/sql/engine/basic/ob_function_table_op.cpp")
 assert "inner_get_next_row_file" in runtime and "file_reader_->next" in runtime
 assert "SYS_VAR_ENABLE_FILE_SQL" in runtime and "get_secure_file_priv" in runtime

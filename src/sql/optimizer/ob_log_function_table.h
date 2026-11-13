@@ -30,7 +30,7 @@ public:
         table_id_(OB_INVALID_ID),
         value_expr_(NULL),
         table_name_(),
-        access_exprs_(), file_sql_format_(0) { }
+        access_exprs_(), file_sql_format_(0), file_sql_header_(true) { }
   virtual ~ObLogFunctionTable() {}
   void add_values_expr(ObRawExpr* expr) { value_expr_ = expr; }
   const ObRawExpr* get_value_expr() const { return value_expr_; }
@@ -43,6 +43,8 @@ public:
   virtual int allocate_expr_post(ObAllocExprContext &ctx) override;
   void set_file_sql_format(int32_t format) { file_sql_format_ = format; }
   int32_t get_file_sql_format() const { return file_sql_format_; }
+  void set_file_sql_header(bool header) { file_sql_header_ = header; }
+  bool get_file_sql_header() const { return file_sql_header_; }
   void set_table_id(uint64_t table_id) { table_id_ = table_id; }
   uint64_t get_table_id() const { return table_id_; }
   /**
@@ -59,6 +61,7 @@ private:
   common::ObString table_name_;
   common::ObSEArray<ObRawExpr*, 4, common::ModulePageAllocator, true> access_exprs_;
   int32_t file_sql_format_;
+  bool file_sql_header_;
   DISALLOW_COPY_AND_ASSIGN(ObLogFunctionTable);
 };
 }

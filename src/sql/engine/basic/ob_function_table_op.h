@@ -30,17 +30,18 @@ namespace sql
 class ObExpr;
 class ObFunctionTableSpec : public ObOpSpec
 {
-OB_UNIS_VERSION_V(2);
+OB_UNIS_VERSION_V(3);
 public:
   ObFunctionTableSpec(common::ObIAllocator &alloc, const ObPhyOperatorType type)
     : ObOpSpec(alloc, type), value_expr_(nullptr), column_exprs_(alloc),
-      file_column_indices_(alloc), has_correlated_expr_(false), file_sql_format_(0)
+      file_column_indices_(alloc), has_correlated_expr_(false), file_sql_format_(0), file_sql_header_(true)
   {}
   ObExpr *value_expr_;
   common::ObFixedArray<ObExpr*, common::ObIAllocator> column_exprs_;
   common::ObFixedArray<int64_t, common::ObIAllocator> file_column_indices_;
   bool has_correlated_expr_;
   int32_t file_sql_format_;
+  bool file_sql_header_;
 };
 
 class ObFunctionTableOp : public ObOperator

@@ -34,7 +34,7 @@ namespace sql
 {
 
 OB_SERIALIZE_MEMBER((ObFunctionTableSpec, ObOpSpec), value_expr_, column_exprs_,
-                    file_column_indices_, has_correlated_expr_, file_sql_format_);
+                    file_column_indices_, has_correlated_expr_, file_sql_format_, file_sql_header_);
 
 int ObFunctionTableOp::inner_open()
 {
@@ -67,7 +67,7 @@ int ObFunctionTableOp::inner_open()
             std::string(path.ptr(), path.length()),
             MY_SPEC.file_sql_format_ == 1 ? file_sql::Reader::Format::csv
                                           : file_sql::Reader::Format::jsonl,
-            std::string(root.ptr(), root.length()));
+            std::string(root.ptr(), root.length()), MY_SPEC.file_sql_header_);
         file_cells_ = new (std::nothrow) std::vector<file_sql::Cell>();
         if (file_reader_ == nullptr || file_cells_ == nullptr) {
           ret = OB_ALLOCATE_MEMORY_FAILED;

@@ -180,6 +180,7 @@ int TableItem::deep_copy(ObIRawExprCopier &expr_copier,
   for_update_wait_us_ = other.for_update_wait_us_;
   skip_locked_ = other.skip_locked_;
   file_sql_format_ = other.file_sql_format_;
+  file_sql_header_ = other.file_sql_header_;
   file_sql_path_ = other.file_sql_path_;
   node_ = other.node_; // should deep copy ? seems to be unnecessary
   snapshot_query_type_ = other.snapshot_query_type_;
