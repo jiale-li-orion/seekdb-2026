@@ -337,7 +337,7 @@ END_P SET_VAR DELIMITER
         REWRITE ROLLBACK ROLLUP ROUTINE ROW ROWID ROW_COUNT ROW_FORMAT ROWS RTREE
         RUN RECYCLEBIN REPLICATION ROTATE ROW_NUMBER RUDUNDANT RECURSIVE RANDOM REDO_TRANSPORT_OPTIONS
         RANK READ_ONLY RECOVERY REJECT ROLE
-        READ_CSV READ_JSON READ_NDJSON READ_PARQUET
+        READ_CSV READ_JSON READ_NDJSON READ_PARQUET GLOB
 
         SAMPLE SAVEPOINT SCALARS SCHEMA_NAME SCN SCOPE SCORE SECOND SECURITY SEED
         SEMISTRUCT_ENCODING_TYPE SERIAL SERIALIZABLE SESSION SESSION_USER SET_TP SHARE SHARED SHUTDOWN SIGNED
@@ -10918,6 +10918,21 @@ READ_CSV '(' expr_list ')'
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_TABLE_EXPRESSION, 2, $3, $6);
   $$->value_ = 3;
+}
+| GLOB '(' expr_list ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_TABLE_EXPRESSION, 2, $3, NULL);
+  $$->value_ = 4;
+}
+| GLOB '(' expr_list ')' relation_name
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_TABLE_EXPRESSION, 2, $3, $5);
+  $$->value_ = 4;
+}
+| GLOB '(' expr_list ')' AS relation_name
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_TABLE_EXPRESSION, 2, $3, $6);
+  $$->value_ = 4;
 }
 ;
 

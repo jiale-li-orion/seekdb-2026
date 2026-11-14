@@ -37,7 +37,7 @@ struct Schema {
 // Schema discovery is a separate full-file pass; scan() reopens the source.
 class Reader {
  public:
-  enum class Format { csv, jsonl };
+  enum class Format { csv, jsonl, glob };
   Reader(std::string path, Format format, std::string secure_root, bool header = true);
   Schema infer();
   void open();
@@ -49,6 +49,7 @@ class Reader {
   bool next_raw(std::vector<Cell>& row);
   bool next_csv(std::vector<Cell>& row);
   bool next_jsonl(std::vector<Cell>& row);
+  bool next_glob(std::vector<Cell>& row);
   void reset_stream();
   std::string path_;
   std::string secure_root_;
@@ -57,6 +58,8 @@ class Reader {
   std::ifstream stream_;
   Schema schema_;
   std::vector<std::string> jsonl_names_;
+  std::vector<std::string> glob_files_;
+  std::size_t glob_index_ = 0;
   std::size_t record_number_ = 0;
   bool prepared_ = false;
   std::filesystem::file_time_type fingerprint_time_;

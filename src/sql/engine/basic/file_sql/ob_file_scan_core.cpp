@@ -1,6 +1,7 @@
 /* Copyright (c) 2026 OceanBase. Licensed under the Apache License, Version 2.0. */
 #include "ob_file_scan_core.h"
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <cctype>
@@ -50,6 +51,40 @@ bool datetime_at(const std::string& s) {
 std::string normalized_datetime(std::string value) {
   if (value.size() == 19 && value[10] == 'T') value[10] = ' ';
   return value;
+}
+
+bool path_within(const std::filesystem::path& root, const std::filesystem::path& candidate) {
+  auto parent = root.begin();
+  auto element = candidate.begin();
+  for (; parent != root.end(); ++parent, ++element) {
+    if (element == candidate.end() || *parent != *element) return false;
+  }
+  return true;
+}
+
+// Linear-space glob matcher for filenames; the SQL glob table function
+// deliberately accepts a wildcard in the last path component only.
+bool glob_matches(const std::string& pattern, const std::string& name) {
+  std::size_t i = 0;
+  std::size_t j = 0;
+  std::size_t star = std::string::npos;
+  std::size_t match = 0;
+  while (j < name.size()) {
+    if (i < pattern.size() && (pattern[i] == '?' || pattern[i] == name[j])) {
+      ++i;
+      ++j;
+    } else if (i < pattern.size() && pattern[i] == '*') {
+      star = i++;
+      match = j;
+    } else if (star != std::string::npos) {
+      i = star + 1;
+      j = ++match;
+    } else {
+      return false;
+    }
+  }
+  while (i < pattern.size() && pattern[i] == '*') ++i;
+  return i == pattern.size();
 }
 
 std::string deduplicate(std::string name, std::unordered_set<std::string>& used) {
@@ -222,11 +257,47 @@ bool Reader::next_jsonl(std::vector<Cell>& row) {
   return true;
 }
 
+bool Reader::next_glob(std::vector<Cell>& row) {
+  row.clear();
+  if (glob_index_ >= glob_files_.size()) return false;
+  row.push_back({glob_files_[glob_index_++], false});
+  ++record_number_;
+  return true;
+}
+
 bool Reader::next_raw(std::vector<Cell>& row) {
-  return format_ == Format::csv ? next_csv(row) : next_jsonl(row);
+  switch (format_) {
+    case Format::csv: return next_csv(row);
+    case Format::jsonl: return next_jsonl(row);
+    case Format::glob: return next_glob(row);
+  }
+  return false;
 }
 
 Schema Reader::infer() {
+  if (format_ == Format::glob) {
+    const auto root = std::filesystem::canonical(secure_root_);
+    const std::filesystem::path pattern_path(path_);
+    const std::filesystem::path dir = std::filesystem::canonical(
+        pattern_path.has_parent_path() ? pattern_path.parent_path() : std::filesystem::path("."));
+    if (!path_within(root, dir)) throw std::runtime_error("glob path escapes secure_file_priv");
+    const std::string wildcard = pattern_path.filename().string();
+    glob_files_.clear();
+    for (const auto &entry : std::filesystem::directory_iterator(dir)) {
+      if (glob_matches(wildcard, entry.path().filename().string()) && entry.is_regular_file()) {
+        const auto resolved = std::filesystem::canonical(entry.path());
+        // A link to an outside file must never disclose its filename.
+        if (path_within(root, resolved)) {
+          glob_files_.push_back(entry.path().lexically_normal().string());
+        }
+      }
+    }
+    std::sort(glob_files_.begin(), glob_files_.end());
+    schema_.columns = {{"file", Kind::varchar, false}};
+    prepared_ = true;
+    open();
+    return schema_;
+  }
   reset_stream();
   Schema found;
   std::vector<Cell> row;
@@ -291,6 +362,11 @@ Schema Reader::infer() {
 
 void Reader::open() {
   if (!prepared_) throw std::runtime_error("infer schema before opening reader");
+  if (format_ == Format::glob) {
+    glob_index_ = 0;
+    record_number_ = 0;
+    return;
+  }
   if (std::filesystem::last_write_time(path_) != fingerprint_time_ ||
       std::filesystem::file_size(path_) != fingerprint_size_) {
     throw std::runtime_error("file changed since schema inference");
@@ -305,6 +381,7 @@ void Reader::open() {
 
 bool Reader::next(std::vector<Cell>& row) {
   if (!prepared_) throw std::runtime_error("infer schema before scanning");
+  if (format_ == Format::glob) return next_glob(row);
   if (std::filesystem::last_write_time(path_) != fingerprint_time_ ||
       std::filesystem::file_size(path_) != fingerprint_size_) {
     throw std::runtime_error("file changed during scan");

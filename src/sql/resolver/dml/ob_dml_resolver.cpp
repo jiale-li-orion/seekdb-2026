@@ -4017,7 +4017,7 @@ int ObDMLResolver::resolve_file_sql_table_item(const ParseNode &parse_tree,
   } else if (OB_FAIL(session_info_->get_sys_variable(share::SYS_VAR_ENABLE_FILE_SQL, file_sql_enabled))) {
   } else if (!file_sql_enabled) {
     ret = OB_NOT_SUPPORTED;
-  } else if (parse_tree.value_ != 1 && parse_tree.value_ != 2) {
+  } else if (parse_tree.value_ != 1 && parse_tree.value_ != 2 && parse_tree.value_ != 4) {
     ret = OB_NOT_SUPPORTED;  // Parquet requires a separate native reader.
   } else if (OB_FAIL(resolve_file_sql_options(*args,
                  static_cast<int32_t>(parse_tree.value_), file_sql_header))) {
@@ -4048,9 +4048,10 @@ int ObDMLResolver::resolve_file_sql_table_item(const ParseNode &parse_tree,
       const std::string filename(path->str_value_, path->str_len_);
       const std::string root(secure_root.ptr(), secure_root.length());
       try {
-        file_sql::Reader reader(filename,
-                                item->file_sql_format_ == 1 ? file_sql::Reader::Format::csv
-                                                             : file_sql::Reader::Format::jsonl, root, file_sql_header);
+        const auto format = item->file_sql_format_ == 1 ? file_sql::Reader::Format::csv
+            : item->file_sql_format_ == 2 ? file_sql::Reader::Format::jsonl
+                                          : file_sql::Reader::Format::glob;
+        file_sql::Reader reader(filename, format, root, file_sql_header);
         file_sql::Schema schema = reader.infer();
         if (schema.columns.empty()) {
           ret = OB_INVALID_ARGUMENT;

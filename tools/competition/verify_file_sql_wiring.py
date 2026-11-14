@@ -26,13 +26,13 @@ for source in (enum, objit_enum):
 
 grammar = read("src/sql/parser/sql_parser_mysql_mode.y")
 keywords = read("src/sql/parser/non_reserved_keywords_mysql_mode.c")
-for token in ("READ_CSV", "READ_JSON", "READ_NDJSON", "READ_PARQUET"):
+for token in ("READ_CSV", "READ_JSON", "READ_NDJSON", "READ_PARQUET", "GLOB"):
     assert token in grammar and token in keywords
 assert "file_sql_table_factor" in grammar
 
 resolver = read("src/sql/resolver/dml/ob_dml_resolver.cpp")
 assert "resolve_file_sql_table_item" in resolver
-assert "file_sql::Reader reader" in resolver
+assert "file_sql::Reader reader" in resolver and "Reader::Format::glob" in resolver
 assert "file_sql_names_.push_back" in resolver
 assert "resolve_function_table_column_item(*item, columns)" in resolver
 assert "get_sys_variable(share::SYS_VAR_ENABLE_FILE_SQL" in resolver
