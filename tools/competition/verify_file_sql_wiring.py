@@ -37,6 +37,8 @@ assert "file_sql_names_.push_back" in resolver
 assert "resolve_function_table_column_item(*item, columns)" in resolver
 assert "get_sys_variable(share::SYS_VAR_ENABLE_FILE_SQL" in resolver
 assert "resolve_file_sql_options" in resolver and "file_sql_header_ = file_sql_header" in resolver
+assert "!table_item.file_sql_nullables_.at(i)" in resolver
+assert "column->expr_->set_result_flag(NOT_NULL_FLAG)" in resolver
 
 stmt = read("src/sql/resolver/dml/ob_dml_stmt.h")
 for name in ("file_sql_format_", "file_sql_path_", "file_sql_names_", "file_sql_types_"):

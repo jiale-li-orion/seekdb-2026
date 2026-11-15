@@ -36,6 +36,7 @@ namespace sql
 
 OB_SERIALIZE_MEMBER(ObSelectIntoOpInput, task_id_, sqc_id_);
 OB_SERIALIZE_MEMBER((ObSelectIntoSpec, ObOpSpec), into_type_, user_vars_, outfile_name_,
+    header_names_,
     field_str_, line_str_, closed_cht_, is_optional_, select_exprs_, is_single_, max_file_size_,
     escaped_cht_, cs_type_, parallel_, buffer_size_, is_overwrite_,
     external_properties_);
@@ -75,6 +76,30 @@ int ObSelectIntoOp::inner_open()
         LOG_WARN("not support select into type", K(format_type_));
       }
     }
+  }
+  return ret;
+}
+
+int ObSelectIntoOp::write_header(ObCsvFileWriter &data_writer)
+{
+  int ret = OB_SUCCESS;
+  if (!header_written_ && external_properties_.csv_format_.parse_header_) {
+    const auto &header_names = MY_SPEC.header_names_;
+    if (header_names.count() != MY_SPEC.select_exprs_.count()) {
+      ret = OB_ERR_UNEXPECTED;
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && i < header_names.count(); ++i) {
+      ObObj name;
+      name.set_varchar(header_names.at(i));
+      name.set_collation_type(cs_type_);
+      if (OB_FAIL(print_field(name, data_writer))) {
+      } else if (i + 1 < header_names.count() && OB_FAIL(write_obj_to_file(field_str_, data_writer))) {
+      }
+    }
+    if (OB_SUCC(ret)) {
+      ret = write_obj_to_file(line_str_, data_writer);
+    }
+    if (OB_SUCC(ret)) header_written_ = true;
   }
   return ret;
 }
@@ -952,6 +977,7 @@ int ObSelectIntoOp::into_outfile(ObExternalFileWriter *data_writer)
   ObCsvFileWriter *csv_data_writer = NULL;
   if (OB_ISNULL(csv_data_writer = static_cast<ObCsvFileWriter *>(data_writer))) {
     ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(write_header(*csv_data_writer))) {
   }
   for (int64_t i = 0; OB_SUCC(ret) && i < select_exprs.count(); ++i) {
     if (OB_ISNULL(select_exprs.at(i))) {
@@ -992,6 +1018,10 @@ int ObSelectIntoOp::into_outfile_batch_csv(const ObBatchRows &brs, ObExternalFil
   ObDatum *datum = NULL;
   ObObj obj;
   ObCsvFileWriter *csv_data_writer = NULL;
+  if (OB_ISNULL(csv_data_writer = static_cast<ObCsvFileWriter *>(data_writer))) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(write_header(*csv_data_writer))) {
+  }
   for (int64_t i = 0; OB_SUCC(ret) && i < select_exprs.count(); ++i) {
     if (OB_FAIL(select_exprs.at(i)->eval_batch(eval_ctx_, *brs.skip_, brs.size_))) {
     } else if (OB_FAIL(datum_vectors.push_back(select_exprs.at(i)->locate_expr_datumvector(eval_ctx_)))) {

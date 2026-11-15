@@ -67,7 +67,9 @@ int ObFunctionTableOp::inner_open()
             std::string(path.ptr(), path.length()),
             MY_SPEC.file_sql_format_ == 1 ? file_sql::Reader::Format::csv
                 : MY_SPEC.file_sql_format_ == 2 ? file_sql::Reader::Format::jsonl
-                                                : file_sql::Reader::Format::glob,
+                : MY_SPEC.file_sql_format_ == 3 ? file_sql::Reader::Format::parquet
+                : MY_SPEC.file_sql_format_ == 4 ? file_sql::Reader::Format::glob
+                                                : file_sql::Reader::Format::csv_schema,
             std::string(root.ptr(), root.length()), MY_SPEC.file_sql_header_);
         file_cells_ = new (std::nothrow) std::vector<file_sql::Cell>();
         if (file_reader_ == nullptr || file_cells_ == nullptr) {

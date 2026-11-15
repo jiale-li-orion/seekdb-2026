@@ -27,6 +27,24 @@ int main(int argc, char** argv) {
  assert(json.next(row) && row[2].is_null && row[4].value == "2026-08-02");
  assert(json.next(row) && row[5].value == "ok" && row[2].value == "90");
  assert(!json.next(row));
+ Reader describe(argv[1], Reader::Format::csv_schema,
+                 std::filesystem::path(argv[1]).parent_path().string());
+ auto describe_schema = describe.infer();
+ assert(describe_schema.columns.size() == 6);
+ assert(describe_schema.columns[0].name == "column_name"
+        && describe_schema.columns[1].name == "column_type"
+        && describe_schema.columns[2].name == "null");
+ const std::vector<std::string> column_types = {
+     "BIGINT", "VARCHAR", "DOUBLE", "BOOLEAN", "DATE", "DATETIME", "VARCHAR", "BIGINT"};
+ for (size_t i = 0; i < column_types.size(); ++i) {
+   assert(describe.next(row) && row.size() == 6);
+   assert(row[1].value == column_types[i]);
+   assert(row[2].value == (i == 4 || i == 5 ? "YES" : "NO"));
+   assert(row[3].is_null && row[4].is_null && row[5].is_null);
+ }
+ assert(!describe.next(row));
+ describe.rewind();
+ assert(describe.next(row) && row[0].value == "id");
  assert(infer_kind({"9223372036854775807", false}) == Kind::bigint);
  assert(infer_kind({"9223372036854775808", false}) == Kind::double_value);
  assert(infer_kind({"2026-02-29", false}) == Kind::varchar);

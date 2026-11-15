@@ -407,7 +407,7 @@ END_P SET_VAR DELIMITER
 %type <node> sort_list sort_key opt_asc_desc sort_list_for_group_by sort_key_for_group_by opt_asc_desc_for_group_by sort_list_opt_null sort_key_opt_null opt_asc_desc_null
 %type <node> opt_query_expression_option_list query_expression_option_list query_expression_option opt_distinct opt_distinct_or_all opt_separator projection
 %type <node> from_list table_references table_reference table_factor normal_relation_factor dot_relation_factor relation_factor
-%type <node> file_sql_table_factor
+%type <node> file_sql_table_factor copy_stmt
 %type <node> relation_factor_in_hint relation_factor_in_hint_list relation_factor_in_pq_hint opt_relation_factor_in_hint_list relation_factor_in_use_join_hint_list
 %type <node> relation_factor_in_leading_hint_list joined_table tbl_name table_subquery table_subquery_alias
 %type <node> relation_factor_with_star relation_with_star_list opt_with_star
@@ -528,6 +528,38 @@ stmt_list
 }
 ;
 
+copy_stmt:
+COPY '(' select_no_parens ')' TO STRING_VALUE
+'(' FORMAT NAME_OB ',' NAME_OB ',' NAME_OB STRING_VALUE ')'
+{
+  ParseNode *select_node = $3;
+  ParseNode *format_type = NULL;
+  ParseNode *header_value = NULL;
+  ParseNode *header_option = NULL;
+  ParseNode *null_values = NULL;
+  ParseNode *null_option = NULL;
+  ParseNode *format_list = NULL;
+  ParseNode *into_node = NULL;
+  if (NULL == select_node || T_SELECT != select_node->type_
+      || NULL != select_node->children_[PARSE_SELECT_INTO]
+      || NULL != select_node->children_[PARSE_SELECT_INTO_EXTRA]) {
+    yyerror(&@1, result, "invalid COPY query");
+    YYERROR;
+  }
+  malloc_non_terminal_node(format_type, result->malloc_pool_, T_EXTERNAL_FILE_FORMAT_TYPE, 1, $9);
+  malloc_terminal_node(header_value, result->malloc_pool_, T_BOOL);
+  header_value->value_ = 1;
+  malloc_non_terminal_node(header_option, result->malloc_pool_, T_PARSE_HEADER, 1, header_value);
+  malloc_non_terminal_node(null_values, result->malloc_pool_, T_EXPR_LIST, 1, $14);
+  malloc_non_terminal_node(null_option, result->malloc_pool_, T_NULL_IF_EXETERNAL, 1, null_values);
+  malloc_non_terminal_node(format_list, result->malloc_pool_, T_EXTERNAL_FILE_FORMAT, 3,
+                           format_type, header_option, null_option);
+  malloc_non_terminal_node(into_node, result->malloc_pool_, T_INTO_OUTFILE, 3, $6, format_list, NULL);
+  select_node->children_[PARSE_SELECT_INTO_EXTRA] = into_node;
+  $$ = select_node;
+}
+;
+
 stmt_list:
 END_P
 {
@@ -558,6 +590,7 @@ opt_end_p:
 /* only preparable statement will set question mark size */
 stmt:
     select_stmt             { $$ = $1; question_mark_issue($$, result); }
+  | copy_stmt               { $$ = $1; question_mark_issue($$, result); }
   | insert_stmt             { $$ = $1; question_mark_issue($$, result); }
   | create_table_stmt       {
     $$ = $1;
@@ -12351,7 +12384,30 @@ explain_or_desc relation_factor opt_desc_column_option
   malloc_non_terminal_node($$, result->malloc_pool_, T_SHOW_COLUMNS, 4, $$, $2, NULL, $3);
 }
 
-| explain_or_desc explainable_stmt { GEN_EXPLAN_STMT($1, $$, 0, 0, $2, NULL, NULL);}
+| explain_or_desc explainable_stmt
+{
+  // DESCRIBE SELECT * FROM read_csv('...') produces the file schema as rows.
+  // Reuse normal SELECT planning with a schema-only table-function variant.
+  // EXPLAIN and every other DESCRIBE form retain their original semantics.
+  ParseNode *file_table = NULL;
+  if ($1 != NULL && $1->type_ == T_INT && $1->value_ == 1 &&
+      $2 != NULL && $2->type_ == T_SELECT &&
+      $2->children_[PARSE_SELECT_FROM] != NULL) {
+    ParseNode *from = $2->children_[PARSE_SELECT_FROM];
+    if (from->num_child_ == 1) {
+      ParseNode *item = from->children_[0];
+      if (item != NULL && item->type_ == T_FILE_SQL_TABLE_EXPRESSION && item->value_ == 1) {
+        file_table = item;
+      }
+    }
+  }
+  if (file_table != NULL) {
+    file_table->value_ = 5;
+    $$ = $2;
+  } else {
+    GEN_EXPLAN_STMT($1, $$, 0, 0, $2, NULL, NULL);
+  }
+}
 | explain_or_desc PRETTY explainable_stmt { GEN_EXPLAN_STMT($1, $$, 0, T_PRETTY, $3, NULL, NULL);}
 | explain_or_desc PRETTY_COLOR explainable_stmt { GEN_EXPLAN_STMT($1, $$, 0, T_PRETTY_COLOR, $3, NULL, NULL);}
 
@@ -12392,7 +12448,11 @@ explain_or_desc relation_factor opt_desc_column_option
 
 explain_or_desc:
 EXPLAIN {$$ = NULL;}
-| DESCRIBE {$$ = NULL;}
+| DESCRIBE
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_INT);
+  $$->value_ = 1;
+}
 | DESC  {$$ = NULL;}
 ;
 

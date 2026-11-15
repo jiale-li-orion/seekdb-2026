@@ -4017,8 +4017,10 @@ int ObDMLResolver::resolve_file_sql_table_item(const ParseNode &parse_tree,
   } else if (OB_FAIL(session_info_->get_sys_variable(share::SYS_VAR_ENABLE_FILE_SQL, file_sql_enabled))) {
   } else if (!file_sql_enabled) {
     ret = OB_NOT_SUPPORTED;
-  } else if (parse_tree.value_ != 1 && parse_tree.value_ != 2 && parse_tree.value_ != 4) {
-    ret = OB_NOT_SUPPORTED;  // Parquet requires a separate native reader.
+  } else if (parse_tree.value_ != 1 && parse_tree.value_ != 2
+             && parse_tree.value_ != 3 && parse_tree.value_ != 4
+             && parse_tree.value_ != 5) {
+    ret = OB_NOT_SUPPORTED;
   } else if (OB_FAIL(resolve_file_sql_options(*args,
                  static_cast<int32_t>(parse_tree.value_), file_sql_header))) {
   } else if (OB_FAIL(session_info_->get_secure_file_priv(secure_root))) {
@@ -4050,7 +4052,9 @@ int ObDMLResolver::resolve_file_sql_table_item(const ParseNode &parse_tree,
       try {
         const auto format = item->file_sql_format_ == 1 ? file_sql::Reader::Format::csv
             : item->file_sql_format_ == 2 ? file_sql::Reader::Format::jsonl
-                                          : file_sql::Reader::Format::glob;
+            : item->file_sql_format_ == 3 ? file_sql::Reader::Format::parquet
+            : item->file_sql_format_ == 4 ? file_sql::Reader::Format::glob
+                                          : file_sql::Reader::Format::csv_schema;
         file_sql::Reader reader(filename, format, root, file_sql_header);
         file_sql::Schema schema = reader.infer();
         if (schema.columns.empty()) {
@@ -7660,7 +7664,15 @@ int ObDMLResolver::resolve_function_table_column_item(const TableItem &table_ite
         if (column == nullptr && OB_FAIL(resolve_function_table_column_item(
                 table_item, type, accuracy, table_item.file_sql_names_.at(i),
                 OB_APP_MIN_COLUMN_ID + i, column))) {
-        } else if (OB_SUCC(ret) && OB_FAIL(col_items.push_back(*column))) {
+        } else if (OB_SUCC(ret)) {
+          // Schema inference has already inspected the full input. Preserve
+          // its nullability in the column expression so DESCRIBE and
+          // downstream expression metadata agree with the actual file rows.
+          if (!table_item.file_sql_nullables_.at(i)) {
+            column->expr_->set_result_flag(NOT_NULL_FLAG);
+          }
+          if (OB_FAIL(col_items.push_back(*column))) {
+          }
         }
       }
     } else if (table_item.function_table_expr_->get_result_type().is_ext()) {

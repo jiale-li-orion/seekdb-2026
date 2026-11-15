@@ -52,12 +52,13 @@ private:
 
 class ObSelectIntoSpec : public ObOpSpec
 {
-  OB_UNIS_VERSION_V(1);
+  OB_UNIS_VERSION_V(2);
 public:
   ObSelectIntoSpec(common::ObIAllocator &alloc, const ObPhyOperatorType type)
     : ObOpSpec(alloc, type),
       into_type_(T_INTO_OUTFILE),
       user_vars_(alloc),
+      header_names_(alloc),
       outfile_name_(),
       field_str_(),
       line_str_(),
@@ -77,6 +78,7 @@ public:
 
   ObItemType into_type_;
   common::ObFixedArray<common::ObString, common::ObIAllocator> user_vars_;
+  common::ObFixedArray<common::ObString, common::ObIAllocator> header_names_;
   common::ObObj outfile_name_;
   common::ObObj field_str_;
   common::ObObj line_str_;
@@ -102,6 +104,7 @@ public:
     : ObOperator(exec_ctx, spec, input),
       top_limit_cnt_(INT64_MAX),
       is_first_(true),
+      header_written_(false),
       field_str_(),
       line_str_(),
       cs_type_(CS_TYPE_INVALID),
@@ -198,6 +201,7 @@ private:
   int init_env_common();
   int init_csv_env();
   void set_csv_format_options();
+  int write_header(ObCsvFileWriter &data_writer);
 
   int get_row_str(const int64_t buf_len, bool is_first_row, char *buf, int64_t &pos);
   int into_dumpfile(ObExternalFileWriter *data_writer);
@@ -266,6 +270,7 @@ private:
 private:
   int64_t top_limit_cnt_;
   bool is_first_;
+  bool header_written_;
   ObObj field_str_;
   ObObj line_str_;
   ObObj file_name_;
